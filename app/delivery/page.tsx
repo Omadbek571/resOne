@@ -1,57 +1,114 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react" // useCallback qo'shildi
+import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
+// React Query
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+// Axios
+import axios, { AxiosError } from "axios"
+// Ikonkalar
 import {
-  ArrowLeft,
-  Check,
-  CheckCheck,
-  CheckCircle,
-  Clock,
-  LogOut,
-  MapPin,
-  Phone,
-  Truck,
-  User,
-  DollarSign,
-  CreditCard,
-  Smartphone,
-  Info,
-  Package,
-  Loader2,
-  XCircle,
+  ArrowLeft, Check, CheckCheck, CheckCircle, Clock, LogOut, MapPin, Phone, Truck, User,
+  DollarSign, CreditCard, Smartphone, Info, Package, Loader2, XCircle, RotateCcw
 } from "lucide-react"
+// Shadcn/ui komponentlar
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
+// import { Textarea } from "@/components/ui/textarea" // Agar kerak bo'lsa
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
+// import { Separator } from "@/components/ui/separator" // Agar kerak bo'lsa
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import axios from "axios"
+// Toastify
 import { ToastContainer, toast } from "react-toastify"
 import "react-toastify/dist/ReactToastify.css"
 
-// To'lov usulini matnga o'girish
-function getPaymentMethodText(method) {
+// ----- TypeScript Interfeyslari (Taxminiy, API javobiga moslashtiring) -----
+interface CustomerInfo { name: string; phone: string; address: string; }
+interface OrderItemMapped { id: number; productId: number; name: string; quantity: number; unit_price: number; total_price: number; image_url: string | null; }
+interface PaymentInfoMapped { id: number; method: string; paid_at: string; processed_by_name?: string | null; /* ...boshqa maydonlar */ }
+interface MappedOrder {
+  id: number;
+  customer: CustomerInfo;
+  items: OrderItemMapped[];
+  total: number;
+  subtotal: number;
+  serviceFeePercent: number;
+  taxPercent: number;
+  timestamp: Date;
+  updatedTimestamp: Date;
+  status: string; // 'ready', 'delivering', 'delivered', 'paid'
+  status_display: string;
+  isPaid: boolean;
+  payment: PaymentInfoMapped | null;
+  paymentMethod: string | null; // 'cash', 'card', 'mobile', 'free'
+  paymentMethodDisplay: string;
+  item_count: number;
+  paidAt: Date | null;
+}
+
+// ----- API Konfiguratsiyasi va Yordamchi Funksiyalar -----
+const API_BASE_URL = "https://oshxonacopy.pythonanywhere.com/api"
+
+const apiClient = axios.create({ baseURL: API_BASE_URL });
+
+const getToken = (): string | null => {
+    if (typeof window !== "undefined") {
+        return localStorage.getItem("token");
+    }
+    return null;
+};
+
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = getToken();
+    if (token && config.headers) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    if (config.headers) {
+      config.headers["Content-Type"] = "application/json";
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+const handleApiError = (error: unknown, context: string, router: ReturnType<typeof useRouter> | null = null) => {
+    console.error(`${context} xatosi:`, error);
+    let errorMessage = `Noma'lum xatolik (${context})`;
+    if (error instanceof AxiosError) {
+        if (error.response) {
+            if (error.response.status === 401 && router) {
+                errorMessage = "Avtorizatsiya xatosi yoki sessiya muddati tugagan.";
+                if (localStorage.getItem("token")) {
+                    localStorage.removeItem("token");
+                    toast.error(errorMessage + " Iltimos, qayta kiring.");
+                    router.push("/auth");
+                }
+                return errorMessage;
+            }
+            errorMessage = error.response.data?.detail || error.response.data?.message || JSON.stringify(error.response.data) || `Server xatosi (${error.response.status})`;
+        } else if (error.request) {
+            errorMessage = "Server bilan bog'lanishda xatolik.";
+        } else {
+            errorMessage = error.message;
+        }
+    } else if (error instanceof Error) {
+        errorMessage = error.message;
+    }
+    // Qayta-qayta bir xil xatoni toast qilmaslik uchun tekshirish mumkin
+    // Hozircha oddiy toast
+    toast.error(`${context}: ${errorMessage}`);
+    return errorMessage;
+};
+
+
+function getPaymentMethodText(method: string | null | undefined): string {
     switch (method?.toLowerCase()) {
         case "cash": return "Naqd pul";
         case "card": return "Karta";
@@ -61,209 +118,202 @@ function getPaymentMethodText(method) {
     }
 }
 
-// Buyurtma obyektini standart formatga keltirish (ikkala API uchun)
-const mapOrderData = (order) => ({
+const mapOrderData = (order: any): MappedOrder => ({
   id: order.id,
   customer: { name: order.customer_name || "Noma'lum", phone: order.customer_phone || "Noma'lum", address: order.customer_address || "Noma'lum" },
-  items: order.items ? order.items.map((item) => ({ id: item.id, productId: item.product, name: item.product_details?.name || "Noma'lum mahsulot", quantity: item.quantity, unit_price: parseFloat(item.unit_price) || 0, total_price: parseFloat(item.total_price) || 0, image_url: item.product_details?.image_url || null })) : [],
+  items: order.items ? order.items.map((item: any) => ({ id: item.id, productId: item.product, name: item.product_details?.name || "Noma'lum mahsulot", quantity: item.quantity, unit_price: parseFloat(item.unit_price) || 0, total_price: parseFloat(item.total_price) || 0, image_url: item.product_details?.image_url || null })) : [],
   total: parseFloat(order.final_price) || 0,
   subtotal: parseFloat(order.total_price) || 0,
   serviceFeePercent: parseFloat(order.service_fee_percent) || 0,
   taxPercent: parseFloat(order.tax_percent) || 0,
   timestamp: new Date(order.created_at),
-  updatedTimestamp: new Date(order.updated_at),
+  updatedTimestamp: new Date(order.updated_at || order.created_at),
   status: order.status,
   status_display: order.status_display,
-  isPaid: !!order.payment || order.final_price === 0,
-  payment: order.payment || null,
-  paymentMethod: order.payment?.method || (order.final_price === 0 ? 'free' : null),
-  paymentMethodDisplay: getPaymentMethodText(order.payment?.method || (order.final_price === 0 ? 'free' : null)) || "To'lanmagan",
+  isPaid: !!order.payment || (order.final_price === 0 && order.status === 'delivered'),
+  payment: order.payment ? {
+      id: order.payment.id,
+      method: order.payment.method,
+      paid_at: order.payment.paid_at || order.payment.timestamp,
+      processed_by_name: order.payment.processed_by_name,
+  } : null,
+  paymentMethod: order.payment?.method || (order.final_price === 0 && order.status === 'delivered' ? 'free' : null),
+  paymentMethodDisplay: getPaymentMethodText(order.payment?.method || (order.final_price === 0 && order.status === 'delivered' ? 'free' : null)) || "To'lanmagan",
   item_count: order.items?.length || 0,
-  paidAt: order.payment?.paid_at ? new Date(order.payment.paid_at) : null
+  paidAt: order.payment?.paid_at || order.payment?.timestamp ? new Date(order.payment.paid_at || order.payment.timestamp) : null
 });
 
 
+// ==========================================================================
+// Yetkazib Berish Sahifasi Komponenti (DeliveryPage)
+// ==========================================================================
 export default function DeliveryPage() {
-  const router = useRouter()
-  const [activeTab, setActiveTab] = useState("ready")
-  const [orders, setOrders] = useState([]) // Tayyor, Yetkazilmoqda, Yetkazildi (to'lanmagan) uchun
-  const [paidOrders, setPaidOrders] = useState([]) // Faqat To'langanlar uchun
-  const [selectedOrder, setSelectedOrder] = useState(null)
-  const [showOrderDetailsDialog, setShowOrderDetailsDialog] = useState(false)
-  const [showPaymentDialog, setShowPaymentDialog] = useState(false)
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash")
-  const [cashReceivedForPayment, setCashReceivedForPayment] = useState("")
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isFetchingPaid, setIsFetchingPaid] = useState(false) // To'langanlarni yuklash holati
-  const [error, setError] = useState("")
+  const router = useRouter();
+  const queryClient = useQueryClient();
 
-  const getToken = () => {
-      if (typeof window !== "undefined") {
-          return localStorage.getItem("token")
-      }
-      return null
-  }
+  const [isClient, setIsClient] = useState(false);
+  const [activeTab, setActiveTab] = useState("ready");
+  const [selectedOrder, setSelectedOrder] = useState<MappedOrder | null>(null);
+  const [showOrderDetailsDialog, setShowOrderDetailsDialog] = useState(false);
+  const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
+  const [cashReceivedForPayment, setCashReceivedForPayment] = useState("");
 
-  // To'langan buyurtmalarni yuklash funksiyasi
-  const fetchPaidOrders = useCallback(async (token) => {
-    setIsFetchingPaid(true);
-    try {
-      const res = await axios.get("https://oshxonacopy.pythonanywhere.com/api/delivery/paid-orders/", {
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      });
-      console.log("API javobi (Paid Orders):", res.data)
-      const paidData = Array.isArray(res.data) ? res.data : [];
-      setPaidOrders(paidData.map(mapOrderData));
-    } catch (err) {
-      console.error("To'langan buyurtmalarni yuklashda xato:", err);
-      toast.error("To'langan buyurtmalarni yuklashda xatolik yuz berdi.");
-    } finally {
-        setIsFetchingPaid(false);
-    }
+  useEffect(() => {
+      setIsClient(true);
   }, []);
 
-  // Asosiy ma'lumotlarni yuklash
-  useEffect(() => {
-    setIsLoading(true);
-    setError("");
-    const token = getToken();
-    if (!token) {
-      router.push("/auth");
-      setIsLoading(false);
-      return;
-    }
+  const token = getToken();
 
-    const fetchInitialData = async () => {
-      try {
-        const results = await Promise.allSettled([
-          axios.get("https://oshxonacopy.pythonanywhere.com/api/orders/", {
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          }),
-          axios.get("https://oshxonacopy.pythonanywhere.com/api/delivery/paid-orders/", {
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          })
-        ]);
+  // ----- React Query So'rovlari (`useQuery`) -----
 
-        let generalOrdersError = null;
-        let paidOrdersError = null;
+  // 1. Umumiy buyurtmalarni olish
+  const {
+      data: deliveryOrders = [],
+      isLoading: isLoadingGeneral,
+      isError: isErrorGeneral,
+      error: errorGeneral,
+      refetch: refetchGeneralOrders,
+  } = useQuery<MappedOrder[], AxiosError>({
+      queryKey: ['orders', 'generalDelivery'],
+      queryFn: async () => {
+          const response = await apiClient.get("/orders/");
+          const data = Array.isArray(response.data) ? response.data : [];
+          return data;
+      },
+      select: (data) => {
+          return data
+              .filter(order => order.order_type === "delivery" && order.status !== 'paid')
+              .map(mapOrderData)
+              .sort((a, b) => b.updatedTimestamp.getTime() - a.updatedTimestamp.getTime());
+      },
+      enabled: isClient && !!token,
+      refetchOnWindowFocus: true,
+      refetchInterval: 10000, // <-- Har 10 soniyada avtomatik yangilash
+  });
 
-        if (results[0].status === 'fulfilled') {
-          console.log("API javobi (General Orders):", results[0].value.data);
-          const data = Array.isArray(results[0].value.data) ? results[0].value.data : [];
-          const deliveryOrders = data
-            .filter(order => order.order_type === "delivery" && order.status !== 'paid')
-            .map(mapOrderData);
-          setOrders(deliveryOrders);
-        } else {
-          console.error("Umumiy buyurtmalarni yuklashda xato:", results[0].reason);
-          generalOrdersError = results[0].reason;
-          setOrders([]);
-        }
+  // 2. To'langan yetkazib berish buyurtmalarini olish
+  const {
+      data: paidDeliveryOrders = [],
+      isLoading: isLoadingPaid,
+      isError: isErrorPaid,
+      error: errorPaid,
+      refetch: refetchPaidOrders,
+  } = useQuery<MappedOrder[], AxiosError>({
+      queryKey: ['orders', 'paidDelivery'],
+      queryFn: async () => {
+          const response = await apiClient.get("/delivery/paid-orders/");
+          const data = Array.isArray(response.data) ? response.data : [];
+          return data.map(mapOrderData)
+                    .sort((a, b) => (b.paidAt?.getTime() || 0) - (a.paidAt?.getTime() || 0));
+      },
+      enabled: isClient && !!token,
+      refetchOnWindowFocus: true,
+      refetchInterval: 10000, // <-- Har 10 soniyada avtomatik yangilash
+  });
 
-        if (results[1].status === 'fulfilled') {
-            console.log("API javobi (Paid Orders):", results[1].value.data);
-            const paidData = Array.isArray(results[1].value.data) ? results[1].value.data : [];
-            setPaidOrders(paidData.map(mapOrderData));
-        } else {
-            console.error("To'langan buyurtmalarni yuklashda xato:", results[1].reason);
-            paidOrdersError = results[1].reason;
-            setPaidOrders([]);
-        }
 
-        if (generalOrdersError || paidOrdersError) {
-            let errorMessage = "";
-            if (generalOrdersError?.response?.status === 401 || paidOrdersError?.response?.status === 401) {
-                errorMessage = "Avtorizatsiya xatosi. Iltimos, qayta kiring.";
-                localStorage.removeItem("token");
-                router.push("/auth");
-            } else {
-                errorMessage = "Buyurtmalarni yuklashda xatolik yuz berdi.";
-                if (generalOrdersError?.response?.data?.detail) errorMessage += ` (${generalOrdersError.response.data.detail})`;
-                if (paidOrdersError?.response?.data?.detail) errorMessage += ` (${paidOrdersError.response.data.detail})`;
-            }
-            setError(errorMessage);
-            toast.error(errorMessage);
-        } else if (orders.length === 0 && paidOrders.length === 0 && results[0].status === 'fulfilled' && results[1].status === 'fulfilled') {
-             // Faqat ikkala so'rov ham muvaffaqiyatli bo'lsa va ikkalasi ham bo'sh bo'lsa xabar chiqarish
-             toast.info("Hozirda yetkazib berish buyurtmalari mavjud emas.")
-        }
+  // ----- React Query Mutatsiyalari (`useMutation`) -----
 
-      } catch (err) {
-        console.error("Ma'lumot yuklashda kutilmagan xato:", err);
-        setError("Ma'lumotlarni yuklashda noma'lum xato.");
-        toast.error("Ma'lumotlarni yuklashda noma'lum xato.");
-        setOrders([]);
-        setPaidOrders([]);
-      } finally {
-        setIsLoading(false);
+  // 1. Yetkazishni Boshlash Mutatsiyasi
+  const startDeliveryMutation = useMutation<any, AxiosError, number>({
+      mutationFn: (orderId) => apiClient.post(`/orders/${orderId}/start_delivery/`, {}),
+      onSuccess: (data, orderId) => {
+          toast.success(`Buyurtma #${orderId} yetkazish boshlandi!`);
+          // Queryni invalidatsiya qilish orqali yangilash
+          queryClient.invalidateQueries({ queryKey: ['orders', 'generalDelivery'] });
+          setActiveTab("delivering");
+      },
+      onError: (error, orderId) => {
+          handleApiError(error, `Buyurtma #${orderId} yetkazishni boshlash`);
+      },
+  });
+
+  // 2. Yetkazishni Yakunlash Mutatsiyasi
+  const completeDeliveryMutation = useMutation<any, AxiosError, number>({
+      mutationFn: (orderId) => apiClient.post(`/orders/${orderId}/mark_delivered/`, {}),
+      onSuccess: (data, orderId) => {
+          toast.success(`Buyurtma #${orderId} yetkazildi deb belgilandi!`);
+          queryClient.invalidateQueries({ queryKey: ['orders', 'generalDelivery'] });
+          setActiveTab("delivered");
+      },
+      onError: (error, orderId) => {
+          handleApiError(error, `Buyurtma #${orderId} yetkazishni yakunlash`);
+      },
+  });
+
+  // 3. To'lovni Qayd Etish Mutatsiyasi
+  interface PaymentPayload { method: string; received_amount?: number; }
+  interface ProcessPaymentVariables { orderId: number; payload: PaymentPayload; }
+
+  const processPaymentMutation = useMutation<any, AxiosError, ProcessPaymentVariables>({
+      mutationFn: ({ orderId, payload }) => apiClient.post(`/orders/${orderId}/process_payment/`, payload),
+      onSuccess: (data, variables) => {
+          toast.success(`Buyurtma #${variables.orderId} uchun to'lov muvaffaqiyatli qayd etildi!`);
+          setShowPaymentDialog(false);
+          setSelectedOrder(null);
+
+          // Ikkala queryni ham invalidatsiya qilish (darhol yangilash uchun)
+          queryClient.invalidateQueries({ queryKey: ['orders', 'generalDelivery'] });
+          queryClient.invalidateQueries({ queryKey: ['orders', 'paidDelivery'] });
+
+          setActiveTab("paid");
+      },
+      onError: (error, variables) => {
+          handleApiError(error, `Buyurtma #${variables.orderId} uchun to'lovni qayd etish`);
+      },
+  });
+
+  // ----- Event Handlerlar -----
+
+  const handleStartDelivery = (orderId: number) => {
+      if (startDeliveryMutation.isPending) return;
+      startDeliveryMutation.mutate(orderId);
+  };
+
+  const handleCompleteDeliveryClick = (order: MappedOrder) => {
+      if (!order || completeDeliveryMutation.isPending) return;
+      completeDeliveryMutation.mutate(order.id);
+  }
+
+  const handleViewOrderDetailsModal = (order: MappedOrder) => {
+      setSelectedOrder(order);
+      setShowOrderDetailsDialog(true);
+  };
+
+  const handleOpenPaymentDialog = (order: MappedOrder) => {
+      if (!order || order.isPaid || processPaymentMutation.isPending) return;
+      setSelectedOrder(order);
+      setSelectedPaymentMethod("cash");
+      setCashReceivedForPayment("");
+      setShowPaymentDialog(true);
+  };
+
+  const handleProcessPayment = () => {
+      if (!selectedOrder || processPaymentMutation.isPending) return;
+
+      let payload: PaymentPayload = { method: selectedPaymentMethod };
+      if (selectedPaymentMethod === "cash") {
+          const received = parseFloat(cashReceivedForPayment);
+          if (isNaN(received) || received < selectedOrder.total) {
+              toast.error("Naqd pul uchun qabul qilingan summa noto'g'ri yoki yetarli emas!");
+              return;
+          }
+          payload.received_amount = received;
       }
-    };
 
-    fetchInitialData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]); // Dependency array soddalashtirildi
+      processPaymentMutation.mutate({ orderId: selectedOrder.id, payload });
+  };
 
-  // Yetkazishni boshlash
-  const handleStartDelivery = async (orderId) => {
-    const token = getToken();
-    if (!token) { toast.error("Autentifikatsiya tokeni topilmadi"); return; }
-    const originalOrders = [...orders];
-    const updatedOrders = orders.map((o) => o.id === orderId ? { ...o, status: "delivering", status_display: "Yetkazilmoqda", updatedTimestamp: new Date() } : o);
-    setOrders(updatedOrders); // Optimistik UI yangilanishi
-    setActiveTab("delivering");
-    try {
-      const response = await axios.post(`https://oshxonacopy.pythonanywhere.com/api/orders/${orderId}/start_delivery/`, {}, { headers: { Authorization: `Bearer ${token}` } });
-      toast.success(`Buyurtma #${orderId} yetkazish boshlandi!`);
-      // API dan kelgan aniq status bilan yana yangilash (ixtiyoriy)
-      setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? mapOrderData(response.data) : o));
-    } catch (err) {
-      setOrders(originalOrders); // Xatolik bo'lsa orqaga qaytarish
-      setActiveTab("ready");
-      console.error("Yetkazishni boshlashda xato:", err);
-      const errorMessage = err.response?.data?.detail || "Yetkazishni boshlashda xato";
-      setError("Xatolik: " + errorMessage); toast.error(errorMessage);
-    }
-  }
 
-  // Yetkazishni yakunlash (mark_delivered)
-  const handleCompleteDeliveryClick = (order) => {
-    if (!order) { toast.warn("Buyurtma topilmadi."); return; }
-    handleCompleteDeliveryDirectly(order.id);
-  }
-  const handleCompleteDeliveryDirectly = async (orderId) => {
-    const token = getToken();
-    if (!token) { toast.error("Autentifikatsiya tokeni topilmadi"); return; }
-    const originalOrders = [...orders];
-    const updatedOrders = orders.map((o) => o.id === orderId ? { ...o, status: "delivered", status_display: "Yetkazildi", updatedTimestamp: new Date() } : o);
-    setOrders(updatedOrders); // Optimistik UI yangilanishi
-    setActiveTab("delivered");
-    try {
-      const response = await axios.post(`https://oshxonacopy.pythonanywhere.com/api/orders/${orderId}/mark_delivered/`, {}, { headers: { Authorization: `Bearer ${token}` } });
-      toast.success(`Buyurtma #${orderId} yetkazildi deb belgilandi!`);
-      // API dan kelgan aniq status bilan yana yangilash (ixtiyoriy)
-       setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? mapOrderData(response.data) : o));
-    } catch (err) {
-      setOrders(originalOrders); // Xatolik bo'lsa orqaga qaytarish
-      setActiveTab("delivering");
-      console.error("Yetkazib berishni yakunlashda xato:", err);
-      const errorMessage = err.response?.data?.detail || "Yetkazib berishni yakunlashda xato";
-      setError("Xatolik: " + errorMessage); toast.error(errorMessage);
-    }
-  }
+  // ----- Yordamchi Funksiyalar -----
 
-  // Batafsil ko'rish (Modal uchun)
-  const handleViewOrderDetailsModal = (order) => {
-    setSelectedOrder(order);
-    setShowOrderDetailsDialog(true);
-  }
-
-  // Vaqtni formatlash va farqini hisoblash
-  const formatTimeOnly = (date) => {
+  const formatTimeOnly = (date: Date | null): string => {
       if (!(date instanceof Date) || isNaN(date.getTime())) return "N/A";
       return date.toLocaleTimeString("uz-UZ", { hour: "2-digit", minute: "2-digit" });
   };
-  const getTimeDifference = (date) => {
+
+  const getTimeDifference = (date: Date | null): string => {
       if (!(date instanceof Date) || isNaN(date.getTime())) return "N/A";
       const now = Date.now();
       const diffSeconds = Math.floor((now - date.getTime()) / 1000);
@@ -276,83 +326,29 @@ export default function DeliveryPage() {
       return `${diffDays} kun`;
   };
 
-  // Tizimdan chiqish
+  const calculatePaymentChange = (): number => {
+      if (selectedPaymentMethod !== 'cash' || !cashReceivedForPayment || !selectedOrder?.total) return 0;
+      const received = parseFloat(cashReceivedForPayment);
+      const total = selectedOrder.total;
+      if (isNaN(received) || isNaN(total) || received < total) return 0;
+      return received - total;
+  }
+
   const handleLogout = () => {
       localStorage.removeItem("token");
+      queryClient.clear();
       router.push("/auth");
       toast.info("Tizimdan chiqildi");
   };
 
-  // ---- To'lovni qayd etish Funksiyalari ----
-  const handleOpenPaymentDialog = (order) => {
-    if (!order || order.isPaid) return;
-    setSelectedOrder(order);
-    setSelectedPaymentMethod("cash");
-    setCashReceivedForPayment("");
-    setIsProcessingPayment(false);
-    setShowPaymentDialog(true);
-  }
+  // ----- UI Render -----
 
-  const handleProcessPayment = async () => {
-    if (!selectedOrder || isProcessingPayment) return;
-    const token = getToken();
-    if (!token) { toast.error("Autentifikatsiya tokeni topilmadi"); return; }
-    let requestBody = { method: selectedPaymentMethod };
-    if (selectedPaymentMethod === "cash") {
-      const received = parseFloat(cashReceivedForPayment);
-      if (isNaN(received) || received < selectedOrder.total) {
-        toast.error("Naqd pul uchun qabul qilingan summa noto'g'ri yoki yetarli emas!");
-        return;
-      }
-      requestBody.received_amount = received;
-    }
-    setIsProcessingPayment(true);
-    try {
-      const response = await axios.post(
-        `https://oshxonacopy.pythonanywhere.com/api/orders/${selectedOrder.id}/process_payment/`,
-        requestBody,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast.success(`Buyurtma #${selectedOrder.id} uchun to'lov muvaffaqiyatli qayd etildi!`);
-      setShowPaymentDialog(false);
+  const isLoading = !isClient || (isLoadingGeneral && deliveryOrders.length === 0) || (isLoadingPaid && paidDeliveryOrders.length === 0); // Faqat boshlang'ich yuklanish
+  const isError = isErrorGeneral || isErrorPaid;
+  const errorObject = errorGeneral || errorPaid;
 
-      // 'orders' state'dan olib tashlash
-      setOrders(prevOrders => prevOrders.filter(order => order.id !== selectedOrder.id));
-
-      // 'paidOrders' ni yangilash (yangi to'langan buyurtmani qo'shish)
-      // API javobidan foydalanish yaxshiroq, lekin fetchPaidOrders ham ishlayveradi
-      const newPaidOrderData = mapOrderData(response.data); // To'liq ma'lumotni olish
-      setPaidOrders(prevPaidOrders => [newPaidOrderData, ...prevPaidOrders]); // Yangisini boshiga qo'shish
-
-      // Agar fetchPaidOrders ishlatmoqchi bo'lsangiz:
-      // if (token) {
-      //   await fetchPaidOrders(token); // To'liq qayta yuklash
-      // }
-
-      setActiveTab("paid");
-      setSelectedOrder(null);
-
-    } catch (err) {
-      console.error("To'lovni qayd etishda xato:", err);
-      const errorMessage = err.response?.data?.detail || err.response?.data?.received_amount?.[0] || "To'lovni qayd etishda noma'lum xato";
-      toast.error(`Xatolik: ${errorMessage}`);
-    } finally {
-      setIsProcessingPayment(false);
-    }
-  }
-
-  const calculatePaymentChange = () => {
-    if (selectedPaymentMethod !== 'cash' || !cashReceivedForPayment || !selectedOrder?.total) return 0;
-    const received = parseFloat(cashReceivedForPayment);
-    const total = parseFloat(selectedOrder.total);
-    if (isNaN(received) || isNaN(total) || received < total) return 0;
-    return received - total;
-  }
-  // -----------------------------------------------------------
-
-
-  // Yuklanish holati
-  if (isLoading) {
+  // Boshlang'ich yuklanish ekrani
+  if (isLoading && !isError) {
     return (
       <div className="flex h-screen items-center justify-center bg-muted/40">
         <div className="flex flex-col items-center gap-2 text-muted-foreground">
@@ -363,7 +359,6 @@ export default function DeliveryPage() {
     );
   }
 
-  // Asosiy UI
   return (
     <div className="flex h-screen flex-col bg-muted/10">
       <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} newestOnTop={false} closeOnClick rtl={false} pauseOnFocusLoss draggable pauseOnHover theme="colored" />
@@ -385,12 +380,17 @@ export default function DeliveryPage() {
 
       {/* Asosiy Kontent */}
       <div className="flex-1 overflow-y-auto p-4" style={{ scrollbarGutter: 'stable' }}>
-        {/* Xatolik xabari */}
-        {error && (
+        {/* Xatolik xabari (agar mavjud bo'lsa) */}
+        {isError && ( // Faqat boshlang'ich yuklanishda xato bo'lsa ko'rsatish
+            (isErrorGeneral && deliveryOrders.length === 0) || (isErrorPaid && paidDeliveryOrders.length === 0)
+        ) && (
             <div className="mb-4 flex flex-col items-center justify-center rounded-md border border-destructive bg-destructive/10 p-4 text-center text-sm text-destructive">
-                <p className="mb-2">{error}</p>
-                <Button variant="destructive" size="sm" onClick={() => { setIsLoading(true); setError(""); window.location.reload(); }}>
-                Qayta yuklash
+                <p className="mb-2">Ma'lumotlarni yuklashda xatolik: {handleApiError(errorObject, "Ma'lumot yuklash", router)}</p>
+                <Button variant="destructive" size="sm" onClick={() => {
+                    if (isErrorGeneral) refetchGeneralOrders();
+                    if (isErrorPaid) refetchPaidOrders();
+                }}>
+                    <RotateCcw className="mr-2 h-4 w-4" /> Qayta urinish
                 </Button>
             </div>
         )}
@@ -398,7 +398,7 @@ export default function DeliveryPage() {
         {/* Tablar */}
         <Tabs defaultValue="ready" value={activeTab} onValueChange={setActiveTab} className="w-full">
           {/* Tab List */}
-          <div className="top-2 bg-muted/10 pt-1 pb-2 z-10 -mx-4 px-4 border-b mb-4 flex justify-start">
+          <div className="sticky top-[4px] bg-muted/10 pt-1 pb-2 z-10 -mx-4 px-4 border-b mb-4 flex justify-start backdrop-blur-sm">
              <TabsList className="grid w-full max-w-lg grid-cols-4">
                 <TabsTrigger value="ready">Tayyor</TabsTrigger>
                 <TabsTrigger value="delivering">Yetkazilmoqda</TabsTrigger>
@@ -409,54 +409,35 @@ export default function DeliveryPage() {
 
           {/* Tab Kontentlari */}
           {["ready", "delivering", "delivered", "paid"].map((tabValue) => {
-            // Joriy tab uchun ma'lumotlar va holatlar
-            let currentOrdersList = [];
-            let isCurrentLoading = false;
+            let currentOrdersList: MappedOrder[] = [];
             let isEmpty = true;
+            let hasFetchError = false;
 
             if (tabValue === 'paid') {
-                currentOrdersList = paidOrders; // Saralashni map ichida qilamiz
-                isCurrentLoading = isFetchingPaid; // Faqat paid uchun alohida loading
-                isEmpty = !isCurrentLoading && currentOrdersList.length === 0;
+                currentOrdersList = paidDeliveryOrders;
+                isEmpty = !isLoadingPaid && currentOrdersList.length === 0;
+                hasFetchError = isErrorPaid && currentOrdersList.length > 0; // Ma'lumot bor, lekin yangilashda xato
             } else {
-                currentOrdersList = orders.filter(order => order.status === tabValue);
-                isCurrentLoading = isLoading; // Boshqa tablar umumiy loading ga bog'liq
-                isEmpty = !isCurrentLoading && currentOrdersList.length === 0;
+                currentOrdersList = deliveryOrders.filter(order => order.status === tabValue);
+                isEmpty = !isLoadingGeneral && currentOrdersList.length === 0;
+                 hasFetchError = isErrorGeneral && currentOrdersList.length > 0; // Ma'lumot bor, lekin yangilashda xato
             }
-
-             // Saralash (updatedTimestamp yoki paidAt bo'yicha)
-             currentOrdersList.sort((a, b) => {
-                const timeA = (tabValue === 'paid' ? a.paidAt : a.updatedTimestamp) || 0;
-                const timeB = (tabValue === 'paid' ? b.paidAt : b.updatedTimestamp) || 0;
-                // Agar Date obyekti bo'lsa getTime() ni ishlatamiz
-                const timestampA = timeA instanceof Date ? timeA.getTime() : 0;
-                const timestampB = timeB instanceof Date ? timeB.getTime() : 0;
-                return timestampB - timestampA;
-             });
-
 
             return (
               <TabsContent key={tabValue} value={tabValue} className="mt-4">
-                {/* Loading holati */}
-                {isCurrentLoading && (
-                    <div className="col-span-full flex items-center justify-center h-60 text-muted-foreground">
-                        <Loader2 className="h-6 w-6 animate-spin mr-2" />
-                        <span>
-                            {tabValue === 'paid' ? "To'langan buyurtmalar yuklanmoqda..." : "Yuklanmoqda..."}
-                        </span>
-                    </div>
-                )}
                 {/* Bo'sh holat */}
-                {isEmpty && !isCurrentLoading && (
+                {isEmpty && !isError && (
                    <div className="col-span-full flex flex-col items-center justify-center h-60 rounded-md border border-dashed p-6 text-center text-muted-foreground">
                      {tabValue === "paid" ? <CheckCheck className="mb-3 h-12 w-12 text-gray-400" /> : <Truck className="mb-3 h-12 w-12 text-gray-400" />}
                      <h3 className="text-lg font-medium">
+                       {/* ... bo'sh holat matnlari ... */}
                        {tabValue === "ready" && "Tayyor buyurtmalar yo'q"}
                        {tabValue === "delivering" && "Yetkazilayotgan buyurtmalar yo'q"}
                        {tabValue === "delivered" && "Yetkazilgan (to'lanmagan) buyurtmalar yo'q"}
                        {tabValue === "paid" && "To'langan buyurtmalar yo'q"}
                      </h3>
                      <p className="text-sm mt-1">
+                        {/* ... bo'sh holat tavsiflari ... */}
                        {tabValue === "ready" && "Yangi buyurtmalar bu yerda ko'rinadi."}
                        {tabValue === "delivering" && "Yetkazish boshlanganda bu yerda ko'rinadi."}
                        {tabValue === "delivered" && "Mijozga topshirilgan, ammo to'lovi kutilayotganlar bu yerda ko'rinadi."}
@@ -466,80 +447,83 @@ export default function DeliveryPage() {
                  )}
 
                 {/* Buyurtmalar ro'yxati */}
-                {!isCurrentLoading && currentOrdersList.length > 0 && (
+                {currentOrdersList.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         {currentOrdersList.map((order) => (
-                        <Card key={order.id} className={`overflow-hidden mt-4 flex flex-col h-full shadow-sm border ${order.isPaid ? 'border-green-300 bg-green-50/30' : ''}`}>
-                            {/* Card Header */}
-                            <CardHeader className="p-3 bg-muted/30 flex flex-row justify-between items-center space-y-0">
-                                <div className="flex flex-col">
-                                    <CardTitle className="text-sm font-semibold leading-none"> Buyurtma #{order.id} </CardTitle>
-                                    <p className="text-xs text-muted-foreground mt-1">
-                                        {/* Vaqtni ko'rsatish */}
-                                        {order.status === 'paid' && order.paidAt
-                                            ? `${formatTimeOnly(order.paidAt)} (${getTimeDifference(order.paidAt)} oldin)`
-                                            : `${formatTimeOnly(order.updatedTimestamp)} (${getTimeDifference(order.updatedTimestamp)} oldin)`
-                                        }
-                                    </p>
-                                </div>
-                                <Badge variant={
-                                    order.status === 'paid' ? 'success' :
-                                    order.status === 'delivered' ? 'default' :
-                                    order.status === 'delivering' ? 'secondary' :
-                                    'outline'
-                                } className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 whitespace-nowrap h-5 ${order.status === 'paid' ? 'bg-green-600 text-white' : ''}`}>
-                                    {order.status === 'ready' && <Clock className="h-2.5 w-2.5" />}
-                                    {order.status === 'delivering' && <Truck className="h-2.5 w-2.5" />}
-                                    {order.status === 'delivered' && <Check className="h-2.5 w-2.5" />}
-                                    {order.status === 'paid' && <CheckCircle className="h-2.5 w-2.5" />}
-                                    {order.status_display || order.status}
-                                </Badge>
-                            </CardHeader>
-
-                            {/* Card Content */}
-                            <CardContent className="p-3 flex-1 space-y-2 text-xs">
-                                {/* Mijoz Info */}
-                                <div className="space-y-1 border-b pb-2">
-                                    <div className="flex items-center gap-1.5"> <User className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" /> <span className="font-medium truncate">{order.customer.name}</span> </div>
-                                    <div className="flex items-center gap-1.5"> <Phone className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" /> <a href={`tel:${order.customer.phone}`} className="text-blue-600 hover:underline">{order.customer.phone}</a> </div>
-                                    <div className="flex items-start gap-1.5"> <MapPin className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-px" /> <span className="line-clamp-2">{order.customer.address}</span> </div>
-                                </div>
-                                {/* Tarkibi */}
-                                <div className="space-y-1">
-                                    <h4 className="text-[11px] font-medium text-muted-foreground flex items-center gap-1"> <Package className="h-3.5 w-3.5"/> Tarkibi ({order.item_count} ta) </h4>
-                                    {order.items && order.items.length > 0 ? (
-                                        <div className="space-y-1">
-                                            {order.items.map(item => (
-                                                <div key={item.id} className="flex justify-between items-center gap-2">
-                                                <div className="flex items-center gap-1.5 min-w-0">
-                                                    <img src={item.image_url || "/placeholder-product.jpg"} alt={item.name} className="h-5 w-5 rounded-sm object-cover flex-shrink-0 border" onError={(e) => { (e.target as HTMLImageElement).src = "/placeholder-product.jpg"; }} loading="lazy" />
-                                                    <span className="truncate font-medium">{item.name}</span> <span className="text-muted-foreground whitespace-nowrap">(x{item.quantity})</span>
-                                                </div>
-                                                <span className="font-medium whitespace-nowrap text-right">{item.total_price.toLocaleString()} so'm</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                        ) : ( <p className="text-center text-muted-foreground py-2">Mahsulotlar yo'q.</p> )}
-                                </div>
-                                {/* Jami & To'lov */}
-                                <div className="space-y-0.5 pt-2 border-t">
-                                    <div className="flex justify-between items-center"> <span className="text-muted-foreground">Jami summa:</span> <span className="font-semibold">{order.total.toLocaleString()} so'm</span> </div>
-                                    <div className="flex justify-between items-center"> <span className="text-muted-foreground">To'lov:</span>
-                                        {order.isPaid ? ( <Badge variant="success" className="text-[10px] px-1.5 py-0.5 h-5 bg-green-100 text-green-800"> To'langan ({order.paymentMethodDisplay}) </Badge>
-                                        ) : ( <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 h-5"> To'lanmagan </Badge> )}
+                            <Card key={order.id} className={`overflow-hidden flex flex-col h-full shadow-sm border ${order.isPaid ? 'border-green-300 bg-green-50/30 dark:bg-green-900/20' : ''}`}>
+                                {/* Card Header va Content (avvalgidek) */}
+                                 <CardHeader className="p-3 bg-muted/30 flex flex-row justify-between items-center space-y-0">
+                                    <div className="flex flex-col">
+                                        <CardTitle className="text-sm font-semibold leading-none"> Buyurtma #{order.id} </CardTitle>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            {order.status === 'paid' && order.paidAt
+                                                ? `${formatTimeOnly(order.paidAt)} (${getTimeDifference(order.paidAt)} oldin)`
+                                                : `${formatTimeOnly(order.updatedTimestamp)} (${getTimeDifference(order.updatedTimestamp)} oldin)`
+                                            }
+                                        </p>
                                     </div>
-                                </div>
-                            </CardContent>
-
-                            {/* Card Footer */}
-                            <CardFooter className="flex items-center gap-2 border-t p-2 mt-auto">
-                                <Button variant="outline" size="sm" className="flex-1 text-xs h-8" onClick={() => handleViewOrderDetailsModal(order)}> <Info className="h-3.5 w-3.5 mr-1"/> Batafsil </Button>
-                                {order.status === "ready" && ( <Button variant="default" size="sm" className="flex-1 bg-blue-600 hover:bg-blue-700 text-white h-8" onClick={() => handleStartDelivery(order.id)}> <Truck className="h-3.5 w-3.5 mr-1"/> Boshlash </Button> )}
-                                {order.status === "delivering" && ( <Button variant="primary" size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white h-8" onClick={() => handleCompleteDeliveryClick(order)}> <Check className="h-3.5 w-3.5 mr-1"/> Yetkazildi </Button> )}
-                                {order.status === "delivered" && !order.isPaid && order.total > 0 && ( <Button variant="success" size="sm" className="flex-1 bg-teal-600 hover:bg-teal-700 text-white h-8" onClick={() => handleOpenPaymentDialog(order)}> <CheckCircle className="h-3.5 w-3.5 mr-1"/> To'lovni Qayd etish </Button> )}
-                            </CardFooter>
-                        </Card>
+                                    <Badge variant={
+                                        order.status === 'paid' ? 'success' :
+                                        order.status === 'delivered' ? 'default' :
+                                        order.status === 'delivering' ? 'secondary' :
+                                        'outline'
+                                    } className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 whitespace-nowrap h-5 ${order.status === 'paid' ? 'bg-green-600 text-white dark:bg-green-700' : ''}`}>
+                                        {order.status === 'ready' && <Clock className="h-2.5 w-2.5" />}
+                                        {order.status === 'delivering' && <Truck className="h-2.5 w-2.5" />}
+                                        {order.status === 'delivered' && <Check className="h-2.5 w-2.5" />}
+                                        {order.status === 'paid' && <CheckCircle className="h-2.5 w-2.5" />}
+                                        {order.status_display || order.status}
+                                    </Badge>
+                                </CardHeader>
+                                <CardContent className="p-3 flex-1 space-y-2 text-xs">
+                                    <div className="space-y-1 border-b pb-2">
+                                        <div className="flex items-center gap-1.5"> <User className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" /> <span className="font-medium truncate">{order.customer.name}</span> </div>
+                                        <div className="flex items-center gap-1.5"> <Phone className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" /> <a href={`tel:${order.customer.phone}`} className="text-blue-600 hover:underline">{order.customer.phone}</a> </div>
+                                        <div className="flex items-start gap-1.5"> <MapPin className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-px" /> <span className="line-clamp-2">{order.customer.address}</span> </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <h4 className="text-[11px] font-medium text-muted-foreground flex items-center gap-1"> <Package className="h-3.5 w-3.5"/> Tarkibi ({order.item_count} ta) </h4>
+                                        {order.items && order.items.length > 0 ? (
+                                            <div className="space-y-1">
+                                                {order.items.map(item => (
+                                                    <div key={item.id} className="flex justify-between items-center gap-2">
+                                                    <div className="flex items-center gap-1.5 min-w-0">
+                                                        <img src={item.image_url || "/placeholder-product.jpg"} alt={item.name} className="h-5 w-5 rounded-sm object-cover flex-shrink-0 border" onError={(e) => { (e.target as HTMLImageElement).src = "/placeholder-product.jpg"; }} loading="lazy" />
+                                                        <span className="truncate font-medium">{item.name}</span> <span className="text-muted-foreground whitespace-nowrap">(x{item.quantity})</span>
+                                                    </div>
+                                                    <span className="font-medium whitespace-nowrap text-right">{item.total_price.toLocaleString()} so'm</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            ) : ( <p className="text-center text-muted-foreground py-2">Mahsulotlar yo'q.</p> )}
+                                    </div>
+                                    <div className="space-y-0.5 pt-2 border-t">
+                                        <div className="flex justify-between items-center"> <span className="text-muted-foreground">Jami summa:</span> <span className="font-semibold">{order.total.toLocaleString()} so'm</span> </div>
+                                        <div className="flex justify-between items-center"> <span className="text-muted-foreground">To'lov:</span>
+                                            {order.isPaid ? ( <Badge variant="success" className="text-[10px] px-1.5 py-0.5 h-5 bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300"> To'langan ({order.paymentMethodDisplay}) </Badge>
+                                            ) : ( <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 h-5"> To'lanmagan </Badge> )}
+                                        </div>
+                                    </div>
+                                </CardContent>
+                                {/* Card Footer (avvalgidek, faqat disabled holati mutationga bog'landi) */}
+                                <CardFooter className="flex items-center gap-2 border-t p-2 mt-auto">
+                                    <Button variant="outline" size="sm" className="flex-1 text-xs h-8" onClick={() => handleViewOrderDetailsModal(order)}> <Info className="h-3.5 w-3.5 mr-1"/> Batafsil </Button>
+                                    {order.status === "ready" && ( <Button variant="default" size="sm" className="flex-1 bg-blue-600 hover:bg-blue-700 text-white h-8" onClick={() => handleStartDelivery(order.id)} disabled={startDeliveryMutation.isPending}> {startDeliveryMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin"/> : <Truck className="h-3.5 w-3.5 mr-1"/>} Boshlash </Button> )}
+                                    {order.status === "delivering" && ( <Button variant="primary" size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white h-8" onClick={() => handleCompleteDeliveryClick(order)} disabled={completeDeliveryMutation.isPending}> {completeDeliveryMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin"/> : <Check className="h-3.5 w-3.5 mr-1"/>} Yetkazildi </Button> )}
+                                    {order.status === "delivered" && !order.isPaid && order.total > 0 && ( <Button variant="success" size="sm" className="flex-1 bg-teal-600 hover:bg-teal-700 text-white h-8" onClick={() => handleOpenPaymentDialog(order)} disabled={processPaymentMutation.isPending}> <CheckCircle className="h-3.5 w-3.5 mr-1"/> To'lovni Qayd etish </Button> )}
+                                </CardFooter>
+                            </Card>
                         ))}
+                    </div>
+                )}
+                {/* Yangilanishdagi xato */}
+                {hasFetchError && (
+                    <div className="mt-4 text-center text-xs text-destructive p-2 bg-destructive/10 rounded">
+                        Ushbu bo'limni yangilashda xatolik yuz berdi. Internet aloqasini tekshiring.
+                        <Button variant="link" size="sm" className="text-xs h-auto p-0 ml-1 text-destructive underline" onClick={() => {
+                            if (tabValue === 'paid') refetchPaidOrders();
+                            else refetchGeneralOrders();
+                        }}>(Qayta urinish)</Button>
                     </div>
                 )}
               </TabsContent>
@@ -548,9 +532,10 @@ export default function DeliveryPage() {
         </Tabs>
       </div>
 
-      {/* Modal (Batafsil ko'rish uchun) */}
+      {/* Modal (Batafsil ko'rish uchun) - O'zgarishsiz */}
       {selectedOrder && showOrderDetailsDialog && (
         <Dialog open={showOrderDetailsDialog} onOpenChange={setShowOrderDetailsDialog}>
+           {/* ... modal content ... */}
            <DialogContent className="sm:max-w-md">
              <DialogHeader>
                <DialogTitle>Buyurtma #{selectedOrder.id} (Batafsil)</DialogTitle>
@@ -559,9 +544,7 @@ export default function DeliveryPage() {
                </DialogDescription>
              </DialogHeader>
              <ScrollArea className="max-h-[60vh] py-4 pr-3">
-                {/* ... details modal content ... */}
                 <div className="space-y-4 text-sm">
-                 {/* Mijoz (Modal) */}
                  <div className="space-y-1">
                    <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mijoz</h3>
                    <div className="space-y-1 border p-2 rounded-md bg-muted/30">
@@ -570,7 +553,6 @@ export default function DeliveryPage() {
                        <div className="flex items-start gap-2"><MapPin className="h-4 w-4 text-muted-foreground mt-0.5"/><span>{selectedOrder.customer.address}</span></div>
                    </div>
                  </div>
-                 {/* Tarkibi (Modal) */}
                  <div className="space-y-1">
                     <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Tarkibi</h3>
                     <div className="space-y-1 border rounded-md divide-y bg-muted/30">
@@ -591,12 +573,11 @@ export default function DeliveryPage() {
                        ))
                      ) : ( <div className="p-4 text-center text-muted-foreground">Mahsulotlar mavjud emas</div> )}
                     </div>
-                    <div className="border-t pt-2 mt-2 flex justify-between font-semibold px-2">
+                     <div className="border-t pt-2 mt-2 flex justify-between font-semibold px-2">
                        <span>Jami:</span>
                        <span>{selectedOrder.total.toLocaleString()} so'm</span>
                      </div>
                  </div>
-                 {/* To'lov (Modal) */}
                  <div className="space-y-1">
                     <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">To'lov</h3>
                     <div className="space-y-1 border p-2 rounded-md bg-muted/30">
@@ -609,8 +590,8 @@ export default function DeliveryPage() {
                         {selectedOrder.payment && (
                           <>
                             <div className="flex justify-between"><span>Usul:</span><span className="font-medium capitalize">{selectedOrder.paymentMethodDisplay}</span></div>
-                            <div className="flex justify-between text-xs text-muted-foreground pt-1 border-t mt-1"><span>Vaqti:</span><span>{new Date(selectedOrder.payment.paid_at).toLocaleString('uz-UZ')}</span></div>
-                            <div className="flex justify-between text-xs text-muted-foreground"><span>Kassir:</span><span>{selectedOrder.payment.processed_by_name || 'N/A'}</span></div>
+                            {selectedOrder.paidAt && <div className="flex justify-between text-xs text-muted-foreground pt-1 border-t mt-1"><span>Vaqti:</span><span>{selectedOrder.paidAt.toLocaleString('uz-UZ')}</span></div>}
+                            {selectedOrder.payment.processed_by_name && <div className="flex justify-between text-xs text-muted-foreground"><span>Kassir:</span><span>{selectedOrder.payment.processed_by_name}</span></div>}
                           </>
                         )}
                     </div>
@@ -624,10 +605,11 @@ export default function DeliveryPage() {
         </Dialog>
       )}
 
-      {/* Yangi To'lov Modali */}
+      {/* Yangi To'lov Modali - O'zgarishsiz */}
       {selectedOrder && showPaymentDialog && (
-        <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-           <DialogContent className="sm:max-w-lg">
+         <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+            {/* ... payment modal content ... */}
+            <DialogContent className="sm:max-w-lg">
              <DialogHeader>
                <DialogTitle>Buyurtma #{selectedOrder.id} uchun To'lov</DialogTitle>
                <DialogDescription>
@@ -635,13 +617,10 @@ export default function DeliveryPage() {
                </DialogDescription>
              </DialogHeader>
              <div className="py-4 space-y-4">
-                {/* ... payment modal content ... */}
-                {/* Jami Summa */}
                <div className="flex justify-between items-center p-3 bg-muted rounded-md">
                  <span className="text-sm font-medium text-muted-foreground">To'lanishi kerak:</span>
                  <span className="text-lg font-bold">{selectedOrder.total.toLocaleString()} so'm</span>
                </div>
-               {/* To'lov Usuli Tanlash */}
                <div className="space-y-2">
                  <Label className="text-sm font-medium">To'lov usuli</Label>
                  <RadioGroup value={selectedPaymentMethod} onValueChange={setSelectedPaymentMethod} className="grid grid-cols-3 gap-4">
@@ -651,16 +630,15 @@ export default function DeliveryPage() {
                      <Label
                        key={item.value}
                        htmlFor={`payment-${item.value}`}
-                       className={`flex flex-col items-center justify-center rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground cursor-pointer ${selectedPaymentMethod === item.value ? 'border-primary' : ''}`}
+                       className={`flex flex-col items-center justify-center rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground cursor-pointer ${selectedPaymentMethod === item.value ? 'border-primary' : ''} ${processPaymentMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
                      >
-                       <RadioGroupItem value={item.value} id={`payment-${item.value}`} className="sr-only" />
+                       <RadioGroupItem value={item.value} id={`payment-${item.value}`} className="sr-only" disabled={processPaymentMutation.isPending} />
                        <item.icon className="mb-3 h-6 w-6" />
                        {item.label}
                      </Label>
                    ))}
                  </RadioGroup>
                </div>
-               {/* Naqd Pul Uchun Qo'shimcha Maydon */}
                {selectedPaymentMethod === 'cash' && (
                  <div className="space-y-3 pt-2 border-t border-dashed">
                     <div className="space-y-1">
@@ -674,37 +652,43 @@ export default function DeliveryPage() {
                            className="h-10 text-base"
                            min={selectedOrder.total.toString()}
                            required
+                           disabled={processPaymentMutation.isPending}
                        />
                    </div>
                     {parseFloat(cashReceivedForPayment) >= selectedOrder.total && (
-                     <div className="flex justify-between items-center p-2 bg-green-100 rounded-md">
-                         <span className="text-sm font-medium text-green-800">Qaytim:</span>
-                         <span className="text-sm font-bold text-green-800">{calculatePaymentChange().toLocaleString()} so'm</span>
+                     <div className="flex justify-between items-center p-2 bg-green-100 rounded-md dark:bg-green-900/50">
+                         <span className="text-sm font-medium text-green-800 dark:text-green-300">Qaytim:</span>
+                         <span className="text-sm font-bold text-green-800 dark:text-green-300">{calculatePaymentChange().toLocaleString()} so'm</span>
                      </div>
                     )}
                  </div>
                )}
+               {processPaymentMutation.isError && (
+                   <p className="text-sm text-destructive text-center">
+                       To'lovni qayd etishda xatolik: {handleApiError(processPaymentMutation.error, "To'lovni qayd etish")}
+                   </p>
+               )}
              </div>
              <DialogFooter>
-               <Button variant="outline" onClick={() => setShowPaymentDialog(false)} disabled={isProcessingPayment}>
+               <Button variant="outline" onClick={() => setShowPaymentDialog(false)} disabled={processPaymentMutation.isPending}>
                  <XCircle className="h-4 w-4 mr-1"/> Bekor qilish
                </Button>
                <Button
                  onClick={handleProcessPayment}
-                 disabled={isProcessingPayment || (selectedPaymentMethod === 'cash' && (!cashReceivedForPayment || parseFloat(cashReceivedForPayment) < selectedOrder.total))}
+                 disabled={processPaymentMutation.isPending || (selectedPaymentMethod === 'cash' && (!cashReceivedForPayment || parseFloat(cashReceivedForPayment) < selectedOrder.total))}
                >
-                 {isProcessingPayment ? (
+                 {processPaymentMutation.isPending ? (
                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                  ) : (
                      <CheckCircle className="h-4 w-4 mr-1"/>
                  )}
-                 {isProcessingPayment ? "Qayta ishlanmoqda..." : "To'lovni Tasdiqlash"}
+                 {processPaymentMutation.isPending ? "Qayta ishlanmoqda..." : "To'lovni Tasdiqlash"}
                </Button>
              </DialogFooter>
            </DialogContent>
         </Dialog>
       )}
 
-    </div> // <--- RETURN UCHUN YOPUVCHI QAVS
+    </div>
   );
-} // <--- KOMPONENT FUNKSIYASINING YOPUVCHI QAVSI
+}
