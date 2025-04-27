@@ -8,14 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import axios from "axios"
-
-
+import { useMutation } from "@tanstack/react-query"
 
 export default function AuthPage() {
   const router = useRouter()
   const [pin, setPin] = useState("")
   const [error, setError] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
 
   const numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
 
@@ -30,60 +28,56 @@ export default function AuthPage() {
     setError("")
   }
 
-  function handleLogin() {
-    setIsLoading(true)
-    axios
-      .post(
-        "https://oshxonacopy.pythonanywhere.com/api/auth/login/",
-        {
-          pin_code: pin,
+  // React Query mutation
+  const mutation = useMutation({
+    mutationFn: (pinCode: string) =>
+      axios.post("https://oshxonacopy.pythonanywhere.com/api/auth/login/", {
+        pin_code: pinCode,
+      }, {
+        headers: {
+          "Content-Type": "application/json",
         },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        },
-      )
-      .then((res) => {
-        if (res.status === 200) {
-          localStorage.setItem(
-            "user",
-            JSON.stringify({
-              name: res.data.user.first_name,
-              role: res.data.user.role.name,
-            }),
-          )
-
-          localStorage.setItem("token", res.data.access)
-          if (res.data.refresh) {
-            localStorage.setItem("refresh", res.data.refresh)
-          }
-
-          const role = res.data.user.role.name
-          if (role === "waiter") {
-            router.push("/pos")
-          } else if (role === "chef") {
-            router.push("/kitchen")
-          } else if (role === "cashier") {
-            router.push("/cashier")
-          } else if (role === "Administrator") {
-            router.push("/admin")
-          } else if (role === "delivery") {
-            router.push("/delivery")
-          } else {
-            setError("Noma'lum rol: " + role)
-          }
-        } else {
-          setError("Tizimga kirishda xatolik yuz berdi")
+      }),
+    onSuccess: (res) => {
+      if (res.status === 200) {
+        localStorage.setItem(
+          "user",
+          JSON.stringify({
+            name: res.data.user.first_name,
+            role: res.data.user.role.name,
+          }),
+        )
+        localStorage.setItem("token", res.data.access)
+        if (res.data.refresh) {
+          localStorage.setItem("refresh", res.data.refresh)
         }
-      })
-      .catch((err) => {
-        console.log(err)
-        setError("Noto'g'ri PIN-kod yoki server xatosi")
-      })
-      .finally(() => {
-        setIsLoading(false)
-      })
+
+        const role = res.data.user.role.name
+        if (role === "waiter") {
+          router.push("/pos")
+        } else if (role === "chef") {
+          router.push("/kitchen")
+        } else if (role === "cashier") {
+          router.push("/cashier")
+        } else if (role === "Administrator") {
+          router.push("/admin")
+        } else if (role === "delivery") {
+          router.push("/delivery")
+        } else {
+          setError("Noma'lum rol: " + role)
+        }
+      } else {
+        setError("Tizimga kirishda xatolik yuz berdi")
+      }
+    },
+    onError: () => {
+      setError("Noto'g'ri PIN-kod yoki server xatosi")
+    }
+  })
+
+  const handleLogin = () => {
+    setError("")
+    mutation.mutate(pin)
   }
 
   return (
@@ -112,7 +106,9 @@ export default function AuthPage() {
               maxLength={4}
               placeholder="****"
             />
-            {error && <p className="text-sm text-destructive mt-1">{error}</p>}
+            {(error || mutation.isError) && (
+              <p className="text-sm text-destructive mt-1">{error}</p>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -160,9 +156,9 @@ export default function AuthPage() {
               variant="default"
               className="h-14 text-xl font-semibold bg-primary w-full"
               onClick={handleLogin}
-              disabled={pin.length !== 4 || isLoading}
+              disabled={pin.length !== 4 || mutation.isPending}
             >
-              {isLoading ? "Kirish..." : "Kirish"}
+              {mutation.isPending ? "Kirish..." : "Kirish"}
             </Button>
           </div>
         </CardContent>

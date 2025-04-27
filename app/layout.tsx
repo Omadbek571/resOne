@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Metadata } from "next"
 import "./globals.css"
+import ClientProvider from "./client-provider"
 
 export const metadata: Metadata = {
   title: "Omadbek Project",
@@ -15,7 +16,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <ClientProvider>
+          {children}
+        </ClientProvider>
+      </body>
     </html>
   )
 }
